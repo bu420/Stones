@@ -5,7 +5,6 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <flecs.h>
 #include <map>
-#include <limits>
 
 #include "gl.h"
 
@@ -197,9 +196,9 @@ int main() {
             pos.z += 0.2;
         }
 
-        const int worldsize = 10;
+        const int viewsize = 10;
         const float aspect = size.x / size.y;
-        glm::mat4 proj = glm::ortho(aspect * -worldsize / 2, aspect * worldsize / 2, -worldsize / 2.f, worldsize / 2.f, -std::numeric_limits<float>::max(), std::numeric_limits<float>::max());
+        glm::mat4 proj = glm::ortho(aspect * -viewsize / 2, aspect * viewsize / 2, -viewsize / 2.f, viewsize / 2.f, -1000.f, 1000.f);
         uniform(program, "proj", proj);
 
         glm::mat4 view = glm::lookAt(pos, pos - glm::vec3(1), glm::vec3(0, 1, 0));
