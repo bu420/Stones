@@ -2,29 +2,11 @@
 #include <string>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/type_ptr.hpp>
 #include <flecs.h>
 #include <map>
 
 #include "gl.h"
-
-void compile(uint32_t shader, const std::string& src) {
-    auto temp = src.c_str();
-    glShaderSource(shader, 1, &temp, nullptr);
-    glCompileShader(shader);
-
-    int success;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-    if (!success) {
-        char log[512];
-        glGetShaderInfoLog(shader, 512, nullptr, log);
-        std::cout << log << std::endl;
-    }
-}
-
-void uniform(uint32_t program, const std::string& location, const glm::mat4& value) {
-    glUniformMatrix4fv(glGetUniformLocation(program, location.c_str()), 1, GL_FALSE, glm::value_ptr(value));
-}
+#include "shader.h"
 
 std::map<int, bool> keys;
 glm::vec2 size;
@@ -67,7 +49,7 @@ int main() {
         }
     });
 
-    glEnable(GL_DEPTH_FUNC);
+    glEnable(GL_DEPTH_TEST);
 
     const float cube[] = {
         0, 0, 0,    0, 0, -1,
@@ -130,59 +112,111 @@ int main() {
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
 
-    const std::string vshaderSrc = R"(
-        #version 450 core
+    uint32_t depthMap;
+    glGenTextures(1, &depthMap);
+    glBindTexture(GL_TEXTURE_2D, depthMap);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, 1024, 1024, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 
-        layout (location = 0) in vec3 pos;
-        layout (location = 1) in vec3 normal;
+    uint32_t depthMapFramebuff;
+    glGenFramebuffers(1, &depthMapFramebuff);
+    glBindFramebuffer(GL_FRAMEBUFFER, depthMapFramebuff);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depthMap, 0);
+    glDrawBuffer(GL_NONE);
+    glReadBuffer(GL_NONE);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        out vec3 p;
-        out vec3 n;
+    uint32_t depthMapProgram = setupNewShaderProgram({ 
+        std::make_pair(GL_VERTEX_SHADER, R"(
+            #version 450 core
 
-        uniform mat4 proj;
-        uniform mat4 view;
-        uniform mat4 model;
+            layout (location = 0) in vec3 pos;
 
-        void main() {
-            p = vec3(model * vec4(pos, 1));
-            n = normal;
-            gl_Position = proj * view * vec4(p, 1);
-        }
-    )";
+            uniform mat4 viewProj;
+            uniform mat4 model;
 
-    const std::string fshaderSrc = R"(
-        #version 450 core
+            void main() {
+                gl_Position = viewProj * model * vec4(pos, 1);
+            }
+        )"),
+        std::make_pair(GL_FRAGMENT_SHADER, R"(
+            #version 450 core
 
-        in vec3 p;
-        in vec3 n;
+            void main() {
+            }
+        )")
+    });
 
-        out vec4 result;
+    uint32_t sceneProgram = setupNewShaderProgram({ 
+        std::make_pair(GL_VERTEX_SHADER, R"(
+            #version 450 core
 
-        void main() {
-            vec3 lightColor = vec3(1);
-            vec3 lightDir = normalize(vec3(.5, 1, 0));
-            vec3 ambient = .1 * lightColor;
-            float diff = max(dot(n, lightDir), 0);
-            vec3 diffuse = diff * lightColor;
+            layout (location = 0) in vec3 pos;
+            layout (location = 1) in vec3 normal;
 
-            result = vec4(ambient + diffuse, 1);
-        }
-    )";
+            uniform mat4 proj;
+            uniform mat4 view;
+            uniform mat4 model;
+            uniform mat4 lightViewProj;
 
-    uint32_t vshader = glCreateShader(GL_VERTEX_SHADER);
-    uint32_t fshader = glCreateShader(GL_FRAGMENT_SHADER);
-    compile(vshader, vshaderSrc);
-    compile(fshader, fshaderSrc);
-    uint32_t program = glCreateProgram();
-    glAttachShader(program, vshader);
-    glAttachShader(program, fshader);
-    glLinkProgram(program);
+            out Data {
+                vec3 pos;
+                vec3 normal;
+                vec4 lightViewProjPos;
+            } data;
 
-    glUseProgram(program);
+            void main() {
+                data.pos = vec3(model * vec4(pos, 1));
+                data.normal = normal;
+                data.lightViewProjPos = lightViewProj * vec4(data.pos, 1);
+                gl_Position = proj * view * model * vec4(pos, 1);
+            }
+        )"), 
+        std::make_pair(GL_FRAGMENT_SHADER, R"(
+            #version 450 core
 
-    glm::vec3 pos(100, 100, 100);
+            uniform sampler2D shadowMap;
+
+            in Data {
+                vec3 pos;
+                vec3 normal;
+                vec4 lightViewProjPos;
+            } data;
+
+            out vec4 result;
+
+            float calcShadow(vec4 pos) {
+                vec3 p = pos.xyz / pos.w * .5 + .5;
+                float d = texture(shadowMap, p.xy).r;
+                float c = p.z;
+
+                float bias = .005;
+                return c - bias > d ? 1 : 0;
+            }
+
+            void main() {
+                vec3 lightColor = vec3(1);
+                vec3 lightDir = vec3(.25, .75, 0);
+                vec3 ambient = .1 * lightColor;
+                float diff = max(dot(data.normal, lightDir), 0);
+                vec3 diffuse = diff * lightColor;
+
+                float shadow = calcShadow(data.lightViewProjPos);
+                vec3 lighting = ambient + (1 - shadow) * diffuse;
+
+                result = vec4(lighting, 1);
+            }
+        )") 
+    });
+
+    glm::vec3 pos(10, 10, 10);
 
     while (!glfwWindowShouldClose(window)) {
+        // Update.
+        
         if (keys[GLFW_KEY_LEFT]) {
             pos.x -= 0.2;
         }
@@ -196,26 +230,74 @@ int main() {
             pos.z += 0.2;
         }
 
+        // Render.
+
+        // Depth map.
+
         const int viewsize = 10;
         const float aspect = size.x / size.y;
-        glm::mat4 proj = glm::ortho(aspect * -viewsize / 2, aspect * viewsize / 2, -viewsize / 2.f, viewsize / 2.f, -1000.f, 1000.f);
-        uniform(program, "proj", proj);
+        glm::mat4 lightProj = glm::ortho(-20.f, 20.f, -20.f, 20.f, 0.f, 100.f);
+        glm::mat4 lightView = glm::lookAt(glm::vec3(1, 4, -2), glm::vec3(0), glm::vec3(0, 1, 0));
+        glm::mat4 lightMatrix = lightProj * lightView;
 
-        glm::mat4 view = glm::lookAt(pos, pos - glm::vec3(1), glm::vec3(0, 1, 0));
-        uniform(program, "view", view);
+        glBindVertexArray(varr);
+        glUseProgram(depthMapProgram);
+        uniform(depthMapProgram, "viewProj", lightMatrix);
 
-        glClearColor(0, 0, 0, 0);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glViewport(0, 0, 1024, 1024);
+        glBindFramebuffer(GL_FRAMEBUFFER, depthMapFramebuff);
+        glClear(GL_DEPTH_BUFFER_BIT);
+
+        glUniform1i(glGetUniformLocation(depthMapProgram, "depthMap"), 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, depthMap);
 
         for (int x = 0; x < 10; x++) {
             for (int z = 0; z < 10; z++) {
-                uniform(program, "model", glm::translate(glm::mat4(1), glm::vec3(x, 0, z)));
+                uniform(depthMapProgram, "model", glm::translate(glm::mat4(1), glm::vec3(x, 0, z)));
                 glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
             }
         }
         for (int x = 0; x < 6; x++) {
             for (int z = 0; z < 6; z++) {
-                uniform(program, "model", glm::translate(glm::mat4(1), glm::vec3(2 + x, 1, 2 + z)));
+                uniform(depthMapProgram, "model", glm::translate(glm::mat4(1), glm::vec3(2 + x, 1, 2 + z)));
+                glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+            }
+        }
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        // Scene.
+
+        glBindVertexArray(varr);
+        glUseProgram(sceneProgram);
+
+        glViewport(0, 0, size.x, size.y);
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        glUniform1i(glGetUniformLocation(sceneProgram, "shadowMap"), 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, depthMap);
+
+        uniform(sceneProgram, "lightViewProj", lightMatrix);
+
+        
+        glm::mat4 proj = glm::ortho(aspect * -viewsize / 2, aspect * viewsize / 2, -viewsize / 2.f, viewsize / 2.f, -1000.f, 1000.f);
+        uniform(sceneProgram, "proj", proj);
+
+        glm::mat4 view = glm::lookAt(pos, pos - glm::vec3(1), glm::vec3(0, 1, 0));
+        uniform(sceneProgram, "view", view);
+
+        for (int x = 0; x < 10; x++) {
+            for (int z = 0; z < 10; z++) {
+                uniform(sceneProgram, "model", glm::translate(glm::mat4(1), glm::vec3(x, 0, z)));
+                glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+            }
+        }
+        for (int x = 0; x < 6; x++) {
+            for (int z = 0; z < 6; z++) {
+                uniform(sceneProgram, "model", glm::translate(glm::mat4(1), glm::vec3(2 + x, 1, 2 + z)));
                 glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
             }
         }
