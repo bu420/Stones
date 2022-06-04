@@ -6,17 +6,20 @@
 
 #include "gl.h"
 #include "shader.h"
+#include "asset.h"
 
 struct Renderer {
     uint32_t depthMap, depthFramebuff;
     uint32_t depthProgram;
 
-    static const float cubeVertices[144];
-    static const uint32_t cubeIndices[36];
-    uint32_t cubeVertexbuff, cubeElementbuff, cubeVertexarr;
-    uint32_t cubeProgram;
+    uint32_t modelVertexbuff, modelElementbuff, modelVertexarr;
+    uint32_t modelProgram;
+
+    Model model;
 
     void setup() {
+        model.load("asset/Residential Buildings 001.obj");
+
         glGenTextures(1, &depthMap);
         glBindTexture(GL_TEXTURE_2D, depthMap);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, 1024, 1024, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
@@ -32,21 +35,24 @@ struct Renderer {
         glReadBuffer(GL_NONE);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        glGenBuffers(1, &cubeVertexbuff);
-        glGenBuffers(1, &cubeElementbuff);
-        glGenVertexArrays(1, &cubeVertexarr);
+        glGenBuffers(1, &modelVertexbuff);
+        glGenBuffers(1, &modelElementbuff);
+        glGenVertexArrays(1, &modelVertexarr);
 
-        glBindVertexArray(cubeVertexarr);
-        glBindBuffer(GL_ARRAY_BUFFER, cubeVertexbuff);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(cubeVertices), cubeVertices, GL_STATIC_DRAW);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cubeElementbuff);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(cubeIndices), cubeIndices, GL_STATIC_DRAW);
+        const auto vertices = model.getVertices();
+        const auto indices = model.getIndices();
+
+        glBindVertexArray(modelVertexarr);
+        glBindBuffer(GL_ARRAY_BUFFER, modelVertexbuff);
+        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), vertices.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, modelElementbuff);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(uint32_t), indices.data(), GL_STATIC_DRAW);
         // Position.
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), 0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), 0);
         // Normal.
         glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)sizeof(glm::vec3));
 
         depthProgram = setupNewShaderProgram({ 
             std::make_pair(GL_VERTEX_SHADER, R"(
@@ -69,7 +75,7 @@ struct Renderer {
             )")
         });
 
-        cubeProgram = setupNewShaderProgram({ 
+        modelProgram = setupNewShaderProgram({ 
             std::make_pair(GL_VERTEX_SHADER, R"(
                 #version 450 core
 
@@ -132,14 +138,22 @@ struct Renderer {
         });
     }
 
-    void render(const std::vector<glm::vec3>& cubes, const glm::vec3& eye, int w, int h) {
+    void renderScene(uint32_t program) {
+        uniform(program, "model", glm::mat4(1));
+        glDrawElements(GL_TRIANGLES, model.getIndices().size(), GL_UNSIGNED_INT, 0);
+    }
+
+    void render(const glm::vec3& eye, int w, int h) {
+        glEnable(GL_DEPTH_TEST);
+
         // Render scene to depth map.
 
-        glm::mat4 lightProj = glm::ortho(-20.f, 20.f, -20.f, 20.f, 0.f, 100.f);
+        const float shadowMapSize = 50;
+        glm::mat4 lightProj = glm::ortho(-shadowMapSize, shadowMapSize, -shadowMapSize, shadowMapSize, 0.f, 100.f);
         glm::mat4 lightView = glm::lookAt(glm::vec3(1, 4, -2), glm::vec3(0), glm::vec3(0, 1, 0));
         glm::mat4 lightMatrix = lightProj * lightView;
 
-        glBindVertexArray(cubeVertexarr);
+        glBindVertexArray(modelVertexarr);
         glUseProgram(depthProgram);
         uniform(depthProgram, "viewProj", lightMatrix);
 
@@ -151,39 +165,31 @@ struct Renderer {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, depthMap);
 
-        for (const auto& pos : cubes) {
-            uniform(depthProgram, "model", glm::translate(glm::mat4(1), pos));
-            glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
-        }
+        renderScene(depthProgram);
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
         // Render scene normally.
 
-        glBindVertexArray(cubeVertexarr);
-        glUseProgram(cubeProgram);
+        glBindVertexArray(modelVertexarr);
+        glUseProgram(modelProgram);
 
         glViewport(0, 0, w, h);
         glClearColor(0, 0, 0, 0);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        glUniform1i(glGetUniformLocation(cubeProgram, "shadowMap"), 0);
+        glUniform1i(glGetUniformLocation(modelProgram, "shadowMap"), 0);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, depthMap);
 
-        uniform(cubeProgram, "lightViewProj", lightMatrix);
+        uniform(modelProgram, "lightViewProj", lightMatrix);
 
-        const int viewsize = 30;
-        const float aspect = w / (float)h;
-        glm::mat4 proj = glm::ortho(aspect * -viewsize / 2, aspect * viewsize / 2, -viewsize / 2.f, viewsize / 2.f, -1000.f, 1000.f);
-        uniform(cubeProgram, "proj", proj);
+        glm::mat4 proj = glm::perspective(glm::radians(80.f), w / (float)h, 0.01f, 1000.f);
+        uniform(modelProgram, "proj", proj);
 
         glm::mat4 view = glm::lookAt(eye, eye - glm::vec3(1), glm::vec3(0, 1, 0));
-        uniform(cubeProgram, "view", view);
+        uniform(modelProgram, "view", view);
 
-        for (const auto& pos : cubes) {
-            uniform(cubeProgram, "model", glm::translate(glm::mat4(1), pos));
-            glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
-        }
+        renderScene(modelProgram);
     }
 };
