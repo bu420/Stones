@@ -2,11 +2,11 @@
 
 #include <vector>
 #include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
 
 #include "gl.h"
 #include "shader.h"
 #include "asset.h"
+#include "camera.h"
 
 struct Renderer {
     uint32_t depthMap, depthFramebuff;
@@ -22,7 +22,7 @@ struct Renderer {
 
         glGenTextures(1, &depthMap);
         glBindTexture(GL_TEXTURE_2D, depthMap);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, 1024, 1024, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, 4096, 4096, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
@@ -130,7 +130,7 @@ struct Renderer {
                     vec3 diffuse = diff * lightColor;
 
                     float shadow = calcShadow(data.lightViewProjPos);
-                    vec3 lighting = ambient + (1 - shadow) * diffuse;
+                    vec3 lighting = ambient + ((1 - shadow) + 1) / 2. * diffuse;
 
                     result = vec4(lighting, 1);
                 }
@@ -143,7 +143,7 @@ struct Renderer {
         glDrawElements(GL_TRIANGLES, model.getIndices().size(), GL_UNSIGNED_INT, 0);
     }
 
-    void render(const glm::vec3& eye, int w, int h) {
+    void render(const Camera& camera, int w, int h) {
         glEnable(GL_DEPTH_TEST);
 
         // Render scene to depth map.
@@ -157,7 +157,7 @@ struct Renderer {
         glUseProgram(depthProgram);
         uniform(depthProgram, "viewProj", lightMatrix);
 
-        glViewport(0, 0, 1024, 1024);
+        glViewport(0, 0, 4096, 4096);
         glBindFramebuffer(GL_FRAMEBUFFER, depthFramebuff);
         glClear(GL_DEPTH_BUFFER_BIT);
 
@@ -187,8 +187,7 @@ struct Renderer {
         glm::mat4 proj = glm::perspective(glm::radians(80.f), w / (float)h, 0.01f, 1000.f);
         uniform(modelProgram, "proj", proj);
 
-        glm::mat4 view = glm::lookAt(eye, eye - glm::vec3(1), glm::vec3(0, 1, 0));
-        uniform(modelProgram, "view", view);
+        uniform(modelProgram, "view", camera.view());
 
         renderScene(modelProgram);
     }

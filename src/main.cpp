@@ -8,6 +8,7 @@
 #include "input.h"
 #include "window.h"
 #include "asset.h"
+#include "camera.h"
 
 int main() {
     glfwInit();
@@ -27,27 +28,51 @@ int main() {
     Renderer renderer;
     renderer.setup();
 
+    Camera camera;
+    camera.setup({ 0, 0, 0 });
+
     glm::vec3 pos(10, 10, 10);
 
     while (!glfwWindowShouldClose(window.window)) {
         // Update.
-        
+
+        camera.update();
+
         if (input.keyDown(GLFW_KEY_LEFT)) {
-            pos.x -= 0.2;
+            camera.rotate(-1, 0);
         }
         if (input.keyDown(GLFW_KEY_RIGHT)) {
-            pos.x += 0.2;
+            camera.rotate(1, 0);
         }
         if (input.keyDown(GLFW_KEY_UP)) {
-            pos.z -= 0.2;
+            camera.rotate(0, 1);
         }
         if (input.keyDown(GLFW_KEY_DOWN)) {
-            pos.z += 0.2;
+            camera.rotate(0, -1);
+        }
+        
+        if (input.keyDown(GLFW_KEY_A)) {
+            camera.moveX(-.1);
+        }
+        if (input.keyDown(GLFW_KEY_D)) {
+            camera.moveX(.1);
+        }
+        if (input.keyDown(GLFW_KEY_W)) {
+            camera.moveZ(-.1);
+        }
+        if (input.keyDown(GLFW_KEY_S)) {
+            camera.moveZ(.1);
+        }
+        if (input.keyDown(GLFW_KEY_SPACE)) {
+            camera.moveY(.1);
+        }
+        if (input.keyDown(GLFW_KEY_LEFT_SHIFT)) {
+            camera.moveY(-.1);
         }
 
         // Render.
 
-        renderer.render(pos, window.w, window.h);
+        renderer.render(camera, window.w, window.h);
 
         glfwSwapBuffers(window.window);
         glfwPollEvents();
